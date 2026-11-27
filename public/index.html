@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>¡DERRAPA! · Pantalla</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body { background: #1d3b1f; color: #fff; font-family: system-ui, sans-serif; overflow: hidden; height: 100vh; display: flex; }
+  #game { flex: 1; display: flex; align-items: center; justify-content: center; position: relative; min-width: 0; }
+  canvas { max-width: 100%; max-height: 100vh; }
+  #side { width: 300px; padding: 20px; background: #14161f; display: flex; flex-direction: column; gap: 14px; }
+  h1 { font-size: 34px; font-weight: 900; font-style: italic; letter-spacing: 1px; color: #ffcc00; text-shadow: 3px 3px 0 #e8433c; }
+  .join { background: #222533; border-radius: 12px; padding: 12px; font-size: 14px; text-align: center; }
+  .join img { width: 100%; max-width: 190px; border-radius: 8px; display: block; margin: 8px auto; background: #fff; }
+  .join b { display: block; font-size: 13px; color: #ffcc00; word-break: break-all; }
+  #rank { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 5px; overflow-y: auto; flex: 1; }
+  #rank li { display: flex; align-items: center; gap: 8px; background: #222533; padding: 7px 10px; border-radius: 8px; font-size: 15px; }
+  #rank .dot { width: 14px; height: 14px; border-radius: 4px; flex: none; }
+  #rank .info { margin-left: auto; opacity: .75; font-size: 13px; white-space: nowrap; }
+  .row { display: flex; gap: 8px; }
+  .row button { flex: 1; }
+  button { background: #e8433c; color: #fff; border: 0; padding: 14px; font-size: 20px; border-radius: 10px; cursor: pointer; font-weight: 800; }
+  button.sec { background: #33384d; font-size: 14px; padding: 10px; font-weight: 600; }
+  #overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; font-weight: 900; pointer-events: none; text-shadow: 0 6px 0 #000a; text-align: center; }
+  #overlay small { display: block; font-size: 28px; font-weight: 600; margin-top: 10px; }
+</style>
+</head>
+<body>
+<div id="game">
+  <canvas id="c" width="1600" height="900"></canvas>
+  <div id="overlay"></div>
+</div>
+<div id="side">
+  <h1>¡DERRAPA!</h1>
+  <div class="join">Escanea y conduce con el móvil<img id="qr" alt="QR para entrar"><b id="url"></b></div>
+  <ol id="rank"></ol>
+  <button id="start">¡SALIDA!</button>
+  <div class="row"><button id="reset" class="sec">A la parrilla</button><button id="bot" class="sec">+ Bot</button><button id="nobots" class="sec">− Bots</button></div>
+</div>
+
+<script>
+// Si se abre con doble clic (file://) no hay servidor: explicamos qué hacer
+if (location.protocol === 'file:') addEventListener('DOMContentLoaded', () => {
+  document.body.innerHTML = '<div style="margin:auto;max-width:560px;padding:30px;font:18px system-ui;color:#fff;line-height:1.5">' +
+    '<h1 style="color:#ffcc00">¡DERRAPA! necesita su servidor</h1>' +
+    '<p>Este archivo no funciona con doble clic. Arranca el juego con <b>npm start</b> en la carpeta <b>derrapa</b> ' +
+    'y abre <b>http://localhost:3000</b> en el navegador (o la URL de Render si ya está publicado).</p></div>';
+});
+</script>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const socket = io();
+const $ = id => document.getElementById(id);
+const cv = $('c'), ctx = cv.getContext('2d');
+$('qr').src = '/qr.svg';
+fetch('/join').then(r => r.json()).then(j => $('url').textContent = j.url.replace(/^https?:\/\//, ''));
+$('start').onclick = () => { audio(); socket.emit('start'); };
+$('reset').onclick = () => socket.emit('reset');
+$('bot').onclick = () => socket.emit('addBot');
+$('nobots').onclick = () => socket.emit('removeBots');
+
+const ICON = { nitro: '⚡', triple: '⚡', aceite: '🛢️', misil: '🚀', escudo: '🛡️', '?': '❔' };
+let T = null, S = null, bg = null, lastCount = null;
+socket.on('connect', () => socket.emit('host'));
+socket.on('track', t => { T = t; bg = drawTrack(); });
+socket.on('state', s => { S = s; updateSide(); });
+
+// ---------- Circuito pintado una sola vez en un canvas aparte ----------
+function drawTrack() {
+  const c = document.createElement('canvas'); c.width = T.W; c.height = T.H;
+  const g = c.getContext('2d');
+  // césped a rayas
+  for (let x = 0; x < T.W; x += 80) { g.fillStyle = (x / 80) % 2 ? '#3f8f3a' : '#47a042'; g.fillRect(x, 0, 80, T.H); }
+  // árboles decorativos lejos del asfalto
+  const near = (x, y) => T.pts.some(p => Math.hypot(p[0] - x, p[1] - y) < T.HALF_W + 45);
+  for (let i = 0; i < 90; i++) {
+    const x = Math.random() * T.W, y = Math.random() * T.H;
+    if (near(x, y)) continue;
+    g.fillStyle = '#0003'; g.beginPath(); g.arc(x + 5, y + 6, 18, 0, 7); g.fill();
+    g.fillStyle = '#2e6b2b'; g.beginPath(); g.arc(x, y, 18, 0, 7); g.fill();
+    g.fillStyle = '#3a8235'; g.beginPath(); g.arc(x - 5, y - 5, 10, 0, 7); g.fill();
+  }
+  const path = () => { g.beginPath(); T.pts.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.closePath(); };
+  g.lineJoin = g.lineCap = 'round';
+  // pianos rojo/blanco
+  path(); g.lineWidth = T.HALF_W * 2 + 18; g.strokeStyle = '#fff'; g.stroke();
+  path(); g.setLineDash([22, 22]); g.strokeStyle = '#e8433c'; g.stroke(); g.setLineDash([]);
+  // asfalto
+  path(); g.lineWidth = T.HALF_W * 2; g.strokeStyle = '#5a5d66'; g.stroke();
+  path(); g.lineWidth = T.HALF_W * 2 - 14; g.strokeStyle = '#62656e'; g.stroke();
+  // línea central
+  path(); g.lineWidth = 3; g.setLineDash([26, 30]); g.strokeStyle = '#ffffff55'; g.stroke(); g.setLineDash([]);
+  // meta a cuadros, perpendicular al primer tramo
+  const [a, b] = [T.pts[0], T.pts[1]];
+  const ang = Math.atan2(b[1] - a[1], b[0] - a[0]);
+  g.save(); g.translate(a[0], a[1]); g.rotate(ang);
+  const sq = 12;
+  for (let y = -T.HALF_W, r = 0; y < T.HALF_W; y += sq, r++)
+    for (let k = 0; k < 2; k++) { g.fillStyle = (r + k) % 2 ? '#fff' : '#111'; g.fillRect(-sq + k * sq, y, sq, sq); }
+  g.restore();
+  return c;
+}
+
+// ---------- Elementos ----------
+function drawKart(p, t) {
+  ctx.save(); ctx.translate(p.x, p.y);
+  ctx.rotate(p.a + (p.spin ? t * 0.025 : 0));
+  // sombra
+  ctx.fillStyle = '#0005'; ctx.beginPath(); ctx.ellipse(3, 4, 22, 15, 0, 0, 7); ctx.fill();
+  // turbo
+  if (p.boost) {
+    ctx.fillStyle = '#ffd43b'; ctx.shadowColor = '#ff7a1a'; ctx.shadowBlur = 20;
+    ctx.beginPath(); ctx.moveTo(-18, -6); ctx.lineTo(-36 - Math.random() * 16, 0); ctx.lineTo(-18, 6); ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+  // chispas del derrape (azul → naranja según la carga)
+  if (p.drift >= 0) {
+    ctx.fillStyle = ['#ddd', '#4dabf7', '#ff922b'][p.drift];
+    for (let i = 0; i < 5; i++) for (const s of [-1, 1])
+      ctx.fillRect(-20 - Math.random() * 14, s * 13 + (Math.random() - .5) * 8, 3, 3);
+  }
+  // ruedas
+  ctx.fillStyle = '#111';
+  for (const [x, y] of [[-12, -13], [-12, 13], [11, -12], [11, 12]]) ctx.fillRect(x - 6, y - 4, 12, 8);
+  // carrocería
+  ctx.fillStyle = p.color; ctx.strokeStyle = '#0008'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.roundRect(-17, -10, 36, 20, 7); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#fff8'; ctx.fillRect(10, -7, 6, 14);            // alerón delantero
+  // piloto (casco)
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(-3, 0, 7, 0, 7); ctx.fill();
+  ctx.fillStyle = '#222'; ctx.fillRect(0, -4, 4, 8);               // visera
+  ctx.restore();
+  if (p.shield) {
+    ctx.strokeStyle = '#74c0fc'; ctx.lineWidth = 3; ctx.fillStyle = '#74c0fc33';
+    ctx.beginPath(); ctx.arc(p.x, p.y, 28 + Math.sin(t / 120) * 2, 0, 7); ctx.fill(); ctx.stroke();
+  }
+  ctx.font = 'bold 15px system-ui'; ctx.textAlign = 'center';
+  ctx.lineWidth = 4; ctx.strokeStyle = '#000a'; ctx.strokeText(p.name, p.x, p.y - 30);
+  ctx.fillStyle = '#fff'; ctx.fillText(p.name, p.x, p.y - 30);
+}
+
+function drawBox(x, y, t) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(Math.sin(t / 500) * 0.4);
+  const hue = (t / 8) % 360;
+  ctx.fillStyle = `hsla(${hue},90%,60%,.85)`; ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.roundRect(-14, -14, 28, 28, 5); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 20px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('?', 0, 1);
+  ctx.restore();
+}
+
+function drawOil([x, y]) {
+  ctx.fillStyle = '#111c'; ctx.beginPath(); ctx.ellipse(x, y, 20, 15, 0.4, 0, 7); ctx.fill();
+  ctx.fillStyle = '#6a3fb855'; ctx.beginPath(); ctx.ellipse(x - 5, y - 3, 8, 5, 0.4, 0, 7); ctx.fill();
+}
+
+function drawMissile([x, y, a]) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(a);
+  ctx.fillStyle = '#ffd43b'; ctx.beginPath(); ctx.moveTo(-10, -4); ctx.lineTo(-24 - Math.random() * 10, 0); ctx.lineTo(-10, 4); ctx.fill();
+  ctx.fillStyle = '#e8433c'; ctx.beginPath(); ctx.roundRect(-11, -5, 20, 10, 5); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.fillRect(4, -5, 3, 10);
+  ctx.restore();
+}
+
+// ---------- Panel lateral y mensajes ----------
+function updateSide() {
+  $('rank').innerHTML = S.players.map((p, i) =>
+    `<li><b>${i + 1}</b><span class="dot" style="background:${p.color}"></span>${esc(p.name)}
+     <span class="info">${p.item ? ICON[p.item] + ' ' : ''}${p.finished ? '🏁 ' + p.time.toFixed(1) + 's' : S.state === 'lobby' ? '' : 'V' + p.lap + '/' + S.laps}</span></li>`).join('');
+  const o = $('overlay');
+  if (S.state === 'countdown') {
+    const n = S.countdown > 3 ? 3 : S.countdown;
+    o.innerHTML = n; o.style.fontSize = '200px'; o.style.color = '#ffcc00';
+    if (n !== lastCount) beep(440, 0.15);
+    lastCount = n;
+  } else if (S.state === 'racing' && S.raceTime < 1.2) {
+    o.innerHTML = '¡YA!'; o.style.fontSize = '200px'; o.style.color = '#2fb35a';
+    if (lastCount !== 0) beep(880, 0.4);
+    lastCount = 0;
+  } else if (S.state === 'finished') {
+    const pod = S.players.slice(0, 3).map((p, i) => ['🥇', '🥈', '🥉'][i] + ' ' + esc(p.name)).join('<br>');
+    o.innerHTML = `🏆<small>${pod}</small>`; o.style.fontSize = '110px'; o.style.color = '#fff';
+  } else if (S.state === 'lobby') {
+    o.innerHTML = S.players.length ? '<small>Pulsa ¡SALIDA! cuando estéis todos</small>' : 'Esperando pilotos…<small>Escanea el QR con el móvil</small>';
+    o.style.fontSize = '64px'; o.style.color = '#fff';
+  } else o.innerHTML = '';
+}
+function esc(s) { return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+// Sonidos sencillos de cuenta atrás (el navegador exige un clic antes de sonar)
+let AC = null;
+function audio() { try { AC = AC || new AudioContext(); AC.resume(); } catch (e) {} }
+function beep(f, d) {
+  if (!AC) return;
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = 'square'; o.frequency.value = f; g.gain.value = 0.08;
+  o.connect(g).connect(AC.destination); o.start(); o.stop(AC.currentTime + d);
+}
+
+(function loop(t) {
+  if (bg) {
+    ctx.drawImage(bg, 0, 0);
+    if (S) {
+      S.boxes.forEach((on, i) => on && drawBox(T.boxes[i].x, T.boxes[i].y, t));
+      S.hazards.forEach(drawOil);
+      S.missiles.forEach(drawMissile);
+      [...S.players].reverse().forEach(p => drawKart(p, t));
+    }
+  }
+  requestAnimationFrame(loop);
+})(0);
+</script>
+</body>
+</html>
